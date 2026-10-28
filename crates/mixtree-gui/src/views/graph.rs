@@ -91,11 +91,22 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
         rect.center() - Vec2::new(tree_layout::VIEW_W, tree_layout::VIEW_H) * 0.5 * scale + pan;
     let to_screen = |p: Pos2| -> Pos2 { origin + p.to_vec2() * scale };
 
+    // Node radii in screen space (also used to trim edges to node borders).
+    let s_node = scale.clamp(0.6, 1.3);
+    let track_r = 19.0 * s_node;
+    let hub_r = 22.0 * s_node;
+
     let color_of = genre_colors(app);
 
-    // Lazily build & cache a cover-art texture for every track node.
+    // Lazily build & cache a cover-art texture for every track node: the real
+    // embedded album cover when the file has one, else a procedural placeholder.
     let ctx = ui.ctx().clone();
-    let missing: Vec<(i64, Color32)> = app
+    let file_of: HashMap<i64, String> = app
+        .tracks
+        .iter()
+        .map(|t| (t.id, t.file_path.clone()))
+        .collect();
+    let missing: Vec<(i64, Color32, Option<String>)> = app
         .graph
         .nodes
         .iter()
@@ -105,13 +116,18 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
                     .as_deref()
                     .and_then(|g| color_of.get(g).copied())
                     .unwrap_or(theme::GREY);
-                Some((*id, col))
+                Some((*id, col, file_of.get(id).cloned()))
             }
             _ => None,
         })
         .collect();
-    for (id, col) in missing {
-        let img = cover_image(id, col);
+    for (id, col, file) in missing {
+        let img = file
+            .as_deref()
+            .filter(|p| !p.starts_with("sample://") && std::path::Path::new(p).exists())
+            .and_then(|p| mixtree_core::metadata::cover_bytes(std::path::Path::new(p)))
+            .and_then(|bytes| decode_cover(&bytes))
+            .unwrap_or_else(|| cover_image(id, col));
         let tex = ctx.load_texture(format!("cover-{id}"), img, egui::TextureOptions::LINEAR);
         app.node_textures.insert(id, tex);
     }
@@ -141,10 +157,11 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
             continue;
         };
         let col = color_of.get(&l.group).copied().unwrap_or(theme::GREY);
+        let (sa, sb) = trim(to_screen(h), to_screen(t), hub_r + 2.0, track_r + 7.0);
         curve(
             &painter,
-            to_screen(h),
-            to_screen(t),
+            sa,
+            sb,
             Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 130),
             1.6,
             true,
@@ -163,7 +180,7 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
         ) else {
             continue;
         };
-        let (sa, sb) = (to_screen(a), to_screen(b));
+        let (sa, sb) = trim(to_screen(a), to_screen(b), track_r + 2.0, track_r + 7.0);
         let mid = curve(
             &painter,
             sa,
@@ -228,44 +245,50 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
                 let c = to_screen(p);
                 let col = theme::hex(color);
                 let s = scale.clamp(0.6, 1.3);
-                let size = Vec2::new(122.0, 44.0) * s;
-                let r = Rect::from_center_size(c, size);
-                // Outer glow (multi-pass bloom).
-                for (exp, w, alpha) in [(9.0, 8.0, 14u8), (5.0, 6.0, 26), (2.0, 4.0, 48)] {
-                    painter.rect(
-                        r.expand(exp),
-                        egui::Rounding::same(14.0),
-                        Color32::TRANSPARENT,
-                        Stroke::new(w, with_alpha(col, alpha)),
-                    );
-                }
-                // Body.
-                painter.rect(
-                    r,
-                    egui::Rounding::same(11.0),
-                    Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 38),
-                    Stroke::new(2.0, col),
+                // Genre circle: soft glow ring + dark centre + symbol (initial).
+                let gr = hub_r;
+                painter.circle_filled(c, gr - 1.0, Color32::from_rgb(0x0b, 0x12, 0x1e));
+                glow_ring(&painter, c, gr, col, 3.0);
+                painter.text(
+                    c,
+                    Align2::CENTER_CENTER,
+                    name.chars()
+                        .next()
+                        .unwrap_or('♪')
+                        .to_uppercase()
+                        .to_string(),
+                    FontId::proportional(16.0 * s),
+                    with_alpha(col, 230),
                 );
-                // Icon disc on the left.
-                let icon_c = egui::pos2(r.left() + 16.0 * s, c.y);
-                painter.circle(
-                    icon_c,
-                    9.0 * s,
-                    Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 140),
+                // Attached rounded label plate to the right (name + BPM range).
+                let plate_h = 40.0 * s;
+                let plate = Rect::from_min_size(
+                    egui::pos2(c.x + gr + 6.0 * s, c.y - plate_h / 2.0),
+                    Vec2::new(104.0 * s, plate_h),
+                );
+                painter.rect(
+                    plate.expand(3.0),
+                    egui::Rounding::same(11.0),
+                    Color32::TRANSPARENT,
+                    Stroke::new(5.0, with_alpha(col, 20)),
+                );
+                painter.rect(
+                    plate,
+                    egui::Rounding::same(9.0),
+                    Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 32),
                     Stroke::new(1.5, col),
                 );
-                // Name + BPM range, left-aligned next to the icon.
-                let tx = r.left() + 30.0 * s;
+                let tx = plate.left() + 9.0 * s;
                 painter.text(
-                    egui::pos2(tx, c.y - 7.0),
+                    egui::pos2(tx, c.y - 7.0 * s),
                     Align2::LEFT_CENTER,
                     name,
-                    FontId::proportional(12.0 * s),
+                    FontId::proportional(12.5 * s),
                     theme::TEXT,
                 );
                 if let Some((lo, hi)) = bpm_range {
                     painter.text(
-                        egui::pos2(tx, c.y + 7.0),
+                        egui::pos2(tx, c.y + 8.0 * s),
                         Align2::LEFT_CENTER,
                         format!("BPM {lo}–{hi}"),
                         FontId::proportional(9.0 * s),
@@ -471,10 +494,19 @@ fn layout_positions(app: &MixtreeApp) -> HashMap<String, Pos2> {
     pos
 }
 
+/// Trims a segment so it starts/ends on the node borders (radii `ra`/`rb`),
+/// not at the centres — so edges and arrowheads stay visible outside the discs.
+fn trim(a: Pos2, b: Pos2, ra: f32, rb: f32) -> (Pos2, Pos2) {
+    let d = b - a;
+    let len = d.length().max(1.0);
+    let u = d / len;
+    (a + u * ra, b - u * rb)
+}
+
 fn arrowhead(painter: &egui::Painter, from: Pos2, to: Pos2, color: Color32, size: f32) {
     let dir = (to - from).normalized();
-    // Place the head a little before the target node.
-    let tip = to - dir * 22.0;
+    // The endpoint is already trimmed to the node border; sit just before it.
+    let tip = to - dir * 2.0;
     let perp = Vec2::new(-dir.y, dir.x);
     let p1 = tip - dir * size + perp * (size * 0.5);
     let p2 = tip - dir * size - perp * (size * 0.5);
@@ -543,6 +575,17 @@ fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let f = |x: u8, y: u8| (x as f32 * (1.0 - t) + y as f32 * t) as u8;
     Color32::from_rgb(f(a.r(), b.r()), f(a.g(), b.g()), f(a.b(), b.b()))
+}
+
+/// Decodes embedded cover-art bytes (PNG/JPEG) into a small egui image.
+fn decode_cover(bytes: &[u8]) -> Option<egui::ColorImage> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let thumb = img.thumbnail(96, 96).to_rgba8();
+    let (w, h) = (thumb.width() as usize, thumb.height() as usize);
+    Some(egui::ColorImage::from_rgba_unmultiplied(
+        [w, h],
+        thumb.as_raw(),
+    ))
 }
 
 /// Generates a procedural "cover art" image for a track: a genre-tinted sunset

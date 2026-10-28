@@ -110,6 +110,17 @@ pub fn content_hash(path: &Path) -> Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+/// Extracts the raw bytes of the first embedded cover-art picture, if any.
+///
+/// Returns the encoded image data (PNG/JPEG/…) exactly as stored in the tag; the
+/// caller decodes it. `None` when the file has no picture or cannot be read.
+pub fn cover_bytes(path: &Path) -> Option<Vec<u8>> {
+    use lofty::file::TaggedFileExt;
+    let tagged = lofty::read_from_path(path).ok()?;
+    let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
+    tag.pictures().first().map(|p| p.data().to_vec())
+}
+
 /// Derives a display title from a file path (used when no title tag exists).
 pub fn title_from_path(path: &Path) -> String {
     path.file_stem()
@@ -157,6 +168,18 @@ mod tests {
         let hb = content_hash(&b).unwrap();
         assert_eq!(ha, content_hash(&a).unwrap(), "hash is stable");
         assert_ne!(ha, hb, "different content → different hash");
+    }
+
+    #[test]
+    fn cover_bytes_none_without_picture() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("no-cover.mp3");
+        std::fs::File::create(&f)
+            .unwrap()
+            .write_all(b"not real audio")
+            .unwrap();
+        // Unreadable / no picture → None, never panics.
+        assert!(cover_bytes(&f).is_none());
     }
 
     #[test]
