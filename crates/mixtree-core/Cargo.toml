@@ -1,0 +1,32 @@
+[package]
+name = "mixtree-core"
+description = "MixTree core: library, analysis interfaces, music graph, transition engine and pathfinding. UI- and audio-independent."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "mixtree_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# SQLite compiled from source (`bundled`) so no system libsqlite3 is required.
+rusqlite = { version = "0.41", features = ["bundled"] }
+# Audio tag / metadata extraction (duration, title, artist, cover art, ...).
+lofty = "0.25"
+# Recursive directory walking for library import.
+walkdir = "2"
+# Content hashing for duplicate detection / moved-file resilience.
+blake3 = "1"
+# Audio decoding for the analysis pipeline (pure Rust, no system deps).
+symphonia = { version = "0.5", features = ["mp3", "flac", "vorbis", "ogg", "isomp4", "aac", "wav", "pcm"] }
+# FFT for chroma/key and spectral features (pure Rust).
+rustfft = "6"
+
+[dev-dependencies]
+tempfile = "3"

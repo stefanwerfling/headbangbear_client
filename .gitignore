@@ -1,0 +1,10 @@
+# Design assets / scratch (kept out of the repo)
+/work/
+
+# Rust build output
+/target/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

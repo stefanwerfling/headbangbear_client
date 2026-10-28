@@ -1,0 +1,20 @@
+[package]
+name = "mixtree-audio"
+description = "MixTree real-time audio engine: decks, mixer, 3-band EQ, loops. Device output via pluggable backends (Null / pacat / CPAL)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Lock-free SPSC queue for control → audio-thread commands (spec §5).
+rtrb = "0.3"
+# Cross-platform audio output. Optional: on Linux it needs `libasound2-dev`
+# (alsa.pc) to build, so it is NOT enabled by default here. Enable with
+# `--features cpal` on a provisioned machine (and for Windows/macOS builds).
+cpal = { version = "0.15", optional = true }
+
+[features]
+default = []
+cpal = ["dep:cpal"]
