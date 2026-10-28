@@ -199,7 +199,9 @@ impl MixtreeApp {
             app.audio.send(ACmd::Play(0));
         }
         // When importing a folder (dev hook), kick off background analysis.
-        if std::env::var_os("MIXTREE_IMPORT").is_some() {
+        if std::env::var_os("MIXTREE_IMPORT").is_some()
+            || std::env::var_os("MIXTREE_IMPORT_PERSIST").is_some()
+        {
             app.start_analysis();
         }
         app
@@ -610,6 +612,25 @@ fn open_database() -> (MixtreeDb, bool, Option<PathBuf>) {
     // Dev/test hook: MIXTREE_IMPORT=<folder> opens a fresh in-memory library,
     // imports that folder and runs the full analysis synchronously — so a
     // headless screenshot shows real tracks, covers and analysed BPM/energy.
+    // One-off: import a folder into the PERSISTENT library (replacing any sample
+    // data), so afterwards a normal launch shows that music permanently.
+    if let Some(folder) = std::env::var_os("MIXTREE_IMPORT_PERSIST") {
+        if let Some(dirs) = directories::ProjectDirs::from("com", "headbangbear", "MixTree") {
+            let dir = dirs.data_dir();
+            let _ = std::fs::create_dir_all(dir);
+            let db_path = dir.join("mixtree.sqlite");
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{}", db_path.display(), suffix));
+            }
+            if let Ok(db) = MixtreeDb::open(&db_path) {
+                let now = now_secs();
+                let _ =
+                    mixtree_core::music_library::import_folder(&db, PathBuf::from(folder), now, |_| {});
+                return (db, true, Some(db_path));
+            }
+        }
+    }
+
     if let Some(folder) = std::env::var_os("MIXTREE_IMPORT") {
         // Fresh temp DB (no sample seeding), import the folder (fast, metadata +
         // covers). Analysis runs in the background thread once the window is up.
