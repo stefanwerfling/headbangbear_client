@@ -1981,6 +1981,7 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "rtrb",
+ "rustix 0.38.44",
 ]
 
 [[package]]

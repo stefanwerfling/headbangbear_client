@@ -56,12 +56,22 @@ pub struct PipeBackend {
 impl PipeBackend {
     /// Spawns `pacat`. Returns `None` if it cannot be started.
     pub fn new(sample_rate: u32, channels: u16) -> Option<Self> {
+        // A small target latency keeps the sound server's buffer short so
+        // play/pause react quickly; the default pacat buffer is hundreds of ms,
+        // which makes transport feel sluggish. 80 ms is a good low-latency/
+        // underrun-safe balance. Overridable via MIXTREE_LATENCY_MS.
+        let latency_ms = std::env::var("MIXTREE_LATENCY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| (10..=1000).contains(v))
+            .unwrap_or(80);
         let child = std::process::Command::new("pacat")
             .args([
                 "--playback",
                 &format!("--rate={sample_rate}"),
                 &format!("--channels={channels}"),
                 "--format=float32le",
+                &format!("--latency-msec={latency_ms}"),
                 "--client-name=MixTree",
             ])
             .stdin(std::process::Stdio::piped())
@@ -69,6 +79,17 @@ impl PipeBackend {
             .stderr(std::process::Stdio::null())
             .spawn()
             .ok()?;
+        // Shrink the OS pipe to `pacat` so little already-rendered audio is
+        // queued ahead of the engine: the default pipe holds ~64 KB (~185 ms at
+        // 44.1 kHz stereo f32), which adds directly to play/pause latency. A
+        // 16 KB pipe (~46 ms) keeps pacat fed between our ~12 ms render blocks
+        // while staying responsive. Best-effort; failure is harmless.
+        #[cfg(unix)]
+        {
+            if let Some(stdin) = child.stdin.as_ref() {
+                let _ = rustix::pipe::fcntl_setpipe_size(stdin, 16_384);
+            }
+        }
         Some(PipeBackend {
             child,
             bytes: Vec::new(),

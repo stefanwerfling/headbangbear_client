@@ -15,6 +15,12 @@ rtrb = "0.3"
 # `--features cpal` on a provisioned machine (and for Windows/macOS builds).
 cpal = { version = "0.15", optional = true }
 
+# Unix only: safe F_SETPIPE_SZ wrapper used to shrink the pipe to `pacat` so
+# transport latency stays low. Keeps the crate `#![forbid(unsafe_code)]`.
+# Not needed on Windows (which uses the CPAL backend).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "0.38", features = ["pipe"] }
+
 [features]
 default = []
 cpal = ["dep:cpal"]
