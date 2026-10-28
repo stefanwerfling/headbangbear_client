@@ -198,6 +198,10 @@ impl MixtreeApp {
         if std::env::var_os("MIXTREE_AUTOPLAY").is_some() {
             app.audio.send(ACmd::Play(0));
         }
+        // When importing a folder (dev hook), kick off background analysis.
+        if std::env::var_os("MIXTREE_IMPORT").is_some() {
+            app.start_analysis();
+        }
         app
     }
 
@@ -603,6 +607,20 @@ impl eframe::App for MixtreeApp {
 /// to an in-memory database if that fails. Seeds sample data into an empty
 /// library for first-run (clearly marked `sample://`).
 fn open_database() -> (MixtreeDb, bool, Option<PathBuf>) {
+    // Dev/test hook: MIXTREE_IMPORT=<folder> opens a fresh in-memory library,
+    // imports that folder and runs the full analysis synchronously — so a
+    // headless screenshot shows real tracks, covers and analysed BPM/energy.
+    if let Some(folder) = std::env::var_os("MIXTREE_IMPORT") {
+        // Fresh temp DB (no sample seeding), import the folder (fast, metadata +
+        // covers). Analysis runs in the background thread once the window is up.
+        let tmp = std::env::temp_dir().join("mixtree-import.sqlite");
+        let _ = std::fs::remove_file(&tmp);
+        let db = MixtreeDb::open(&tmp).expect("temp db");
+        let now = now_secs();
+        let _ = mixtree_core::music_library::import_folder(&db, PathBuf::from(folder), now, |_| {});
+        return (db, true, Some(tmp));
+    }
+
     let path = directories::ProjectDirs::from("com", "headbangbear", "MixTree").and_then(|dirs| {
         let dir = dirs.data_dir();
         std::fs::create_dir_all(dir).ok()?;

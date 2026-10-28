@@ -316,17 +316,25 @@ impl MixtreeDb {
                 sub_ph.join(",")
             ));
         }
+        // BPM/energy filters keep not-yet-analysed tracks (NULL) visible, so
+        // freshly imported tracks don't disappear until analysis fills them in.
         if let Some(v) = filter.bpm_min {
-            sql.push_str(&format!(" AND bpm >= ?{}", bind!(v)));
+            sql.push_str(&format!(" AND (bpm IS NULL OR bpm >= ?{})", bind!(v)));
         }
         if let Some(v) = filter.bpm_max {
-            sql.push_str(&format!(" AND bpm <= ?{}", bind!(v)));
+            sql.push_str(&format!(" AND (bpm IS NULL OR bpm <= ?{})", bind!(v)));
         }
         if let Some(v) = filter.energy_min {
-            sql.push_str(&format!(" AND energy >= ?{}", bind!(v as i64)));
+            sql.push_str(&format!(
+                " AND (energy IS NULL OR energy >= ?{})",
+                bind!(v as i64)
+            ));
         }
         if let Some(v) = filter.energy_max {
-            sql.push_str(&format!(" AND energy <= ?{}", bind!(v as i64)));
+            sql.push_str(&format!(
+                " AND (energy IS NULL OR energy <= ?{})",
+                bind!(v as i64)
+            ));
         }
         if filter.exclude_missing {
             sql.push_str(" AND missing = 0");
