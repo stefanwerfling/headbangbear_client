@@ -111,11 +111,24 @@ fn deck(ui: &mut egui::Ui, app: &mut MixtreeApp, side: Side, width: f32) {
                 {
                     app.audio_send(ACmd::Cue(idx));
                 }
-                let play_txt = if playing { "I I" } else { ">" };
-                let play = egui::Button::new(egui::RichText::new(play_txt).strong())
-                    .fill(if playing { theme::GREEN } else { theme::PANEL2 })
-                    .min_size(Vec2::new(46.0, 24.0));
-                if ui.add_enabled(track.is_some(), play).clicked() {
+                // Primary transport control — made deliberately prominent so it
+                // reads as "the play button": a filled accent-coloured pill with
+                // a clear ▶ / ⏸ glyph.
+                let play_txt = if playing { "⏸" } else { "▶" };
+                let play = egui::Button::new(
+                    egui::RichText::new(play_txt)
+                        .size(18.0)
+                        .strong()
+                        .color(Color32::WHITE),
+                )
+                .fill(if playing { theme::GREEN } else { color })
+                .rounding(egui::Rounding::same(6.0))
+                .min_size(Vec2::new(58.0, 30.0));
+                if ui
+                    .add_enabled(track.is_some(), play)
+                    .on_hover_text(if playing { "Pause" } else { "Abspielen" })
+                    .clicked()
+                {
                     app.audio_send(ACmd::TogglePlay(idx));
                 }
                 let loop_btn = egui::Button::new("LOOP").fill(if loop_active {
