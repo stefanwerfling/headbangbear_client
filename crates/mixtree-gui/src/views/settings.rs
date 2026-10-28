@@ -86,6 +86,14 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
                     .size(12.0)
                     .color(theme::TEXT_DIM),
                 );
+                let (audio_txt, audio_col) = match app.audio.backend_name {
+                    "null" => (
+                        "Audio-Ausgabe: stumm (kein Soundserver gefunden).".to_string(),
+                        theme::ORANGE,
+                    ),
+                    name => (format!("Audio-Ausgabe aktiv über: {name}"), theme::GREEN),
+                };
+                ui.label(egui::RichText::new(audio_txt).size(12.0).color(audio_col));
             });
         });
     });

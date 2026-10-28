@@ -222,17 +222,28 @@ pub fn start_cpal() -> Option<AudioHandle> {
     })
 }
 
-/// Picks the best available backend: CPAL (if compiled) → silent Null fallback.
+/// Picks the best available backend: CPAL (if compiled) → `pacat`
+/// (PulseAudio/PipeWire, Linux) → silent Null fallback.
 ///
-/// The Null fallback is deliberate: it keeps the engine/clock running without
-/// routing audio to the machine's speakers, which is the right default for
-/// headless/CI environments.
+/// The Null fallback keeps the engine/clock running without routing audio to the
+/// speakers, which is the right behaviour for headless/CI environments (where no
+/// sound server is reachable, so `pacat` fails and we fall through to it anyway).
+/// Set `MIXTREE_AUDIO=null` to force the silent backend explicitly.
 pub fn start_default(out_rate: u32, out_channels: u16) -> AudioHandle {
+    if std::env::var("MIXTREE_AUDIO").as_deref() == Ok("null") {
+        return start_null(out_rate, out_channels);
+    }
     #[cfg(feature = "cpal")]
     {
         if let Some(h) = start_cpal() {
             return h;
         }
+    }
+    // Linux desktops: stream to PulseAudio/PipeWire via `pacat` (no build-time
+    // audio dev headers needed). Returns None if `pacat`/the sound server is
+    // unavailable, in which case we fall through to the silent engine.
+    if let Some(h) = start_pipe(out_rate, out_channels) {
+        return h;
     }
     start_null(out_rate, out_channels)
 }
