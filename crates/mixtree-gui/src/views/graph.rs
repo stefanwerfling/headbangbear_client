@@ -98,20 +98,30 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
 
     let color_of = genre_colors(app);
 
-    // Lazily build & cache a cover-art texture for every track node: the real
-    // embedded album cover when the file has one, else a procedural placeholder.
+    // Build & cache a cover-art texture for every track node: the real embedded
+    // album cover when the file has one, else a procedural placeholder. Real
+    // covers are read + decoded on background threads (file reads can be slow)
+    // and uploaded here as they arrive; the window never blocks on them.
     let ctx = ui.ctx().clone();
     let file_of: HashMap<i64, String> = app
         .tracks
         .iter()
         .map(|t| (t.id, t.file_path.clone()))
         .collect();
-    let missing: Vec<(i64, Color32, Option<String>)> = app
+    // Upload any covers finished by background threads.
+    while let Ok((id, img)) = app.cover_rx.try_recv() {
+        let tex = ctx.load_texture(format!("cover-{id}"), img, egui::TextureOptions::LINEAR);
+        app.node_textures.insert(id, tex);
+    }
+    // Request decodes for tracks that still have no texture and aren't in flight.
+    let to_request: Vec<(i64, Color32, Option<String>)> = app
         .graph
         .nodes
         .iter()
         .filter_map(|n| match n {
-            GraphNode::Track { id, genre, .. } if !app.node_textures.contains_key(id) => {
+            GraphNode::Track { id, genre, .. }
+                if !app.node_textures.contains_key(id) && !app.cover_requested.contains(id) =>
+            {
                 let col = genre
                     .as_deref()
                     .and_then(|g| color_of.get(g).copied())
@@ -121,15 +131,37 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
             _ => None,
         })
         .collect();
-    for (id, col, file) in missing {
-        let img = file
-            .as_deref()
+    for (id, col, file) in to_request {
+        app.cover_requested.insert(id);
+        match file
             .filter(|p| !p.starts_with("sample://") && std::path::Path::new(p).exists())
-            .and_then(|p| mixtree_core::metadata::cover_bytes(std::path::Path::new(p)))
-            .and_then(|bytes| decode_cover(&bytes))
-            .unwrap_or_else(|| cover_image(id, col));
-        let tex = ctx.load_texture(format!("cover-{id}"), img, egui::TextureOptions::LINEAR);
-        app.node_textures.insert(id, tex);
+        {
+            Some(path) => {
+                // Real file: read + decode the embedded cover off-thread.
+                let tx = app.cover_tx.clone();
+                std::thread::spawn(move || {
+                    let img = mixtree_core::metadata::cover_bytes(std::path::Path::new(&path))
+                        .and_then(|bytes| decode_cover(&bytes))
+                        .unwrap_or_else(|| cover_image(id, col));
+                    let _ = tx.send((id, img));
+                });
+            }
+            None => {
+                // Sample / missing file: cheap procedural placeholder, inline.
+                let img = cover_image(id, col);
+                let tex =
+                    ctx.load_texture(format!("cover-{id}"), img, egui::TextureOptions::LINEAR);
+                app.node_textures.insert(id, tex);
+            }
+        }
+    }
+    // Keep repainting while real covers are still decoding so they pop in.
+    if app
+        .cover_requested
+        .iter()
+        .any(|id| !app.node_textures.contains_key(id))
+    {
+        ctx.request_repaint_after(std::time::Duration::from_millis(120));
     }
 
     // --- very subtle ambient theme lighting behind each genre area (depth) ---

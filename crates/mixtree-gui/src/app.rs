@@ -16,7 +16,7 @@ use mixtree_core::pathfinding::{self, RecommendedPath};
 use mixtree_core::recommendation::{self, Recommendation};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
 use crate::{theme, views};
@@ -31,6 +31,16 @@ pub enum AnalysisMsg {
     Progress { remaining: i64 },
     /// The queue has drained.
     Done,
+}
+
+/// A deck's audio, decoded on a background thread so the window never blocks on
+/// a (potentially slow) file decode. `gen` lets a stale decode be dropped when a
+/// newer track was loaded onto the same deck in the meantime.
+pub struct DeckAudioLoaded {
+    deck: usize,
+    generation: u64,
+    audio: Option<TrackAudio>,
+    waveform: Vec<f32>,
 }
 
 fn now_secs() -> i64 {
@@ -144,6 +154,20 @@ pub struct MixtreeApp {
 
     /// Cached cover-art textures per track id (for the tree node discs).
     pub node_textures: std::collections::HashMap<i64, egui::TextureHandle>,
+    /// Track ids whose cover decode has already been requested (so each file is
+    /// read at most once); the decoded image arrives via `cover_rx`.
+    pub cover_requested: HashSet<i64>,
+    /// Finished cover decodes from background threads: `(track id, image)`.
+    pub cover_rx: Receiver<(i64, egui::ColorImage)>,
+    pub cover_tx: Sender<(i64, egui::ColorImage)>,
+
+    // Background deck-audio decoding.
+    deck_audio_rx: Receiver<DeckAudioLoaded>,
+    deck_audio_tx: Sender<DeckAudioLoaded>,
+    /// Per-deck load generation; a decode result is applied only if still current.
+    deck_gen: [u64; 2],
+    /// Whether a deck's audio is still being decoded (drives repaint + spinner).
+    pub deck_loading: [bool; 2],
 
     dirty: bool,
 }
@@ -155,6 +179,9 @@ impl MixtreeApp {
         let (db, live, db_path) = open_database();
         let genres = db.list_genres().unwrap_or_default();
         let config = db.get_config().unwrap_or_default();
+
+        let (cover_tx, cover_rx) = mpsc::channel();
+        let (deck_audio_tx, deck_audio_rx) = mpsc::channel();
 
         let mut app = MixtreeApp {
             db,
@@ -190,6 +217,13 @@ impl MixtreeApp {
             audio: mixtree_audio::start_default(AUDIO_RATE, AUDIO_CHANNELS),
             reduced_motion: false,
             node_textures: std::collections::HashMap::new(),
+            cover_requested: HashSet::new(),
+            cover_rx,
+            cover_tx,
+            deck_audio_rx,
+            deck_audio_tx,
+            deck_gen: [0, 0],
+            deck_loading: [false, false],
             dirty: true,
         };
         app.reload();
@@ -207,43 +241,93 @@ impl MixtreeApp {
         app
     }
 
-    /// Builds playback audio for a track: decodes a real file, or synthesizes a
-    /// clearly-labelled test tone for the `sample://` development tracks (which
-    /// have no file on disk) so the transport is demonstrable.
-    fn deck_audio(&self, track: &Track) -> Option<TrackAudio> {
+    /// Loads a track's audio onto an engine deck (0 = A, 1 = B), resetting pitch.
+    ///
+    /// Cues/sections (cheap DB reads) are applied immediately so the deck shows
+    /// the track right away. Real-file decoding — potentially slow — runs on a
+    /// background thread; the samples and waveform are applied once the decode
+    /// finishes (see `poll_deck_audio`), so the UI never blocks. The synthetic
+    /// `sample://` tones are cheap and stay inline.
+    fn load_deck_audio(&mut self, deck: usize, track: &Track) {
+        let cues = self.db.list_cues(track.id).unwrap_or_default();
+        let sections = self.db.list_sections(track.id).unwrap_or_default();
+        self.deck_gen[deck] = self.deck_gen[deck].wrapping_add(1);
+        let generation = self.deck_gen[deck];
+        {
+            let d = if deck == 0 {
+                &mut self.deck_a
+            } else {
+                &mut self.deck_b
+            };
+            d.cues = cues;
+            d.sections = sections;
+            d.waveform = Vec::new();
+        }
+        self.set_pitch(deck, 1.0);
+
         if track
             .file_path
             .starts_with(mixtree_core::sample_data::SAMPLE_PATH_PREFIX)
         {
-            return Some(synth_tone(track.bpm.unwrap_or(120.0), 30.0));
+            let audio = synth_tone(track.bpm.unwrap_or(120.0), 30.0);
+            let waveform = audio.peaks(120);
+            let d = if deck == 0 {
+                &mut self.deck_a
+            } else {
+                &mut self.deck_b
+            };
+            d.waveform = waveform;
+            self.audio.send(ACmd::Load {
+                deck,
+                audio: Some(audio),
+            });
+            self.deck_loading[deck] = false;
+            return;
         }
-        match mixtree_core::analysis::decode::decode_interleaved(Path::new(&track.file_path)) {
-            Ok(a) => Some(TrackAudio {
-                samples: Arc::from(a.samples.into_boxed_slice()),
-                channels: a.channels,
-                sample_rate: a.sample_rate,
-            }),
-            Err(_) => None,
-        }
+
+        // Real file: decode off-thread so the window stays responsive.
+        self.deck_loading[deck] = true;
+        let path = track.file_path.clone();
+        let tx = self.deck_audio_tx.clone();
+        std::thread::spawn(move || {
+            let audio = decode::decode_interleaved(Path::new(&path))
+                .ok()
+                .map(|a| TrackAudio {
+                    samples: Arc::from(a.samples.into_boxed_slice()),
+                    channels: a.channels,
+                    sample_rate: a.sample_rate,
+                });
+            let waveform = audio.as_ref().map(|a| a.peaks(120)).unwrap_or_default();
+            let _ = tx.send(DeckAudioLoaded {
+                deck,
+                generation,
+                audio,
+                waveform,
+            });
+        });
     }
 
-    /// Loads a track's audio onto an engine deck (0 = A, 1 = B), resetting pitch
-    /// and computing its waveform envelope.
-    fn load_deck_audio(&mut self, deck: usize, track: &Track) {
-        let audio = self.deck_audio(track);
-        let waveform = audio.as_ref().map(|a| a.peaks(120)).unwrap_or_default();
-        let cues = self.db.list_cues(track.id).unwrap_or_default();
-        let sections = self.db.list_sections(track.id).unwrap_or_default();
-        let d = if deck == 0 {
-            &mut self.deck_a
-        } else {
-            &mut self.deck_b
-        };
-        d.waveform = waveform;
-        d.cues = cues;
-        d.sections = sections;
-        self.audio.send(ACmd::Load { deck, audio });
-        self.set_pitch(deck, 1.0);
+    /// Applies finished background deck decodes; call once per frame. A result is
+    /// dropped if a newer track was loaded onto that deck meanwhile.
+    fn poll_deck_audio(&mut self) {
+        while let Ok(msg) = self.deck_audio_rx.try_recv() {
+            if self.deck_gen[msg.deck] != msg.generation {
+                continue; // stale: a newer load superseded this one.
+            }
+            {
+                let d = if msg.deck == 0 {
+                    &mut self.deck_a
+                } else {
+                    &mut self.deck_b
+                };
+                d.waveform = msg.waveform;
+            }
+            self.audio.send(ACmd::Load {
+                deck: msg.deck,
+                audio: msg.audio,
+            });
+            self.deck_loading[msg.deck] = false;
+        }
     }
 
     /// Sets a deck's pitch (tempo) and informs the engine.
@@ -563,9 +647,14 @@ fn run_analysis_thread(path: &Path, tx: mpsc::Sender<AnalysisMsg>) {
 impl eframe::App for MixtreeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_analysis();
+        self.poll_deck_audio();
         if self.analyzing {
             // Keep polling the worker while analysis runs.
             ctx.request_repaint_after(std::time::Duration::from_millis(300));
+        }
+        if self.deck_loading[0] || self.deck_loading[1] {
+            // A background deck decode is in flight; repaint to pick up the result.
+            ctx.request_repaint_after(std::time::Duration::from_millis(120));
         }
         // Animate the playhead while a deck is playing.
         if self.audio.is_playing(0) || self.audio.is_playing(1) {
