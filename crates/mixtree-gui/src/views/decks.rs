@@ -112,6 +112,17 @@ fn deck(ui: &mut egui::Ui, app: &mut MixtreeApp, side: Side, width: f32) {
                     };
                     ui.label(egui::RichText::new(sub).size(11.0).color(theme::TEXT_DIM));
                 });
+                // Mini track navigator (‹ ›): browse the filtered library into
+                // this deck, as in the reference deck header.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(4.0);
+                    if nav_btn(ui, false).on_hover_text("Nächster Track").clicked() {
+                        deck_nav(app, idx, 1);
+                    }
+                    if nav_btn(ui, true).on_hover_text("Vorheriger Track").clicked() {
+                        deck_nav(app, idx, -1);
+                    }
+                });
                 });
 
                 // Waveform with live playhead.
@@ -249,6 +260,51 @@ fn toggle_loop(app: &mut MixtreeApp, idx: usize, bars: u32) {
         } else {
             app.deck_b.loop_active = true
         }
+    }
+}
+
+/// A small drawn chevron navigator button (‹ or ›). The font lacks these small
+/// guillemets, so the chevron is painted.
+fn nav_btn(ui: &mut egui::Ui, left: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(16.0, 18.0), Sense::click());
+    let col = if resp.hovered() {
+        theme::TEXT
+    } else {
+        theme::TEXT_DIM
+    };
+    let c = rect.center();
+    let s = 3.5;
+    let w = Stroke::new(1.8, col);
+    let dx = if left { s * 0.6 } else { -s * 0.6 };
+    let p = ui.painter();
+    p.line_segment(
+        [egui::pos2(c.x + dx, c.y - s), egui::pos2(c.x - dx, c.y)],
+        w,
+    );
+    p.line_segment(
+        [egui::pos2(c.x - dx, c.y), egui::pos2(c.x + dx, c.y + s)],
+        w,
+    );
+    resp
+}
+
+/// Loads the previous (`dir < 0`) / next (`dir > 0`) track from the filtered
+/// library into the deck (deck A becomes current; deck B becomes the next track).
+fn deck_nav(app: &mut MixtreeApp, idx: usize, dir: i64) {
+    let n = app.tracks.len();
+    if n == 0 {
+        return;
+    }
+    let cur = app.deck(idx).track.as_ref().map(|t| t.id);
+    let pos = cur
+        .and_then(|id| app.tracks.iter().position(|t| t.id == id))
+        .unwrap_or(0);
+    let next = (pos as i64 + dir).rem_euclid(n as i64) as usize;
+    let id = app.tracks[next].id;
+    if idx == 0 {
+        app.set_current(id);
+    } else {
+        app.load_next(id);
     }
 }
 
