@@ -535,11 +535,18 @@ fn mixer(ui: &mut egui::Ui, app: &mut MixtreeApp) {
             let peak = app.audio.master_peak();
             let (ca, cb) = ui
                 .horizontal(|ui| {
-                    let ca = eq_column(ui, "A", &mut a, theme::RED);
-                    ui.add_space(6.0);
+                    // EQ rows (LOW · MID · HIGH left-to-right, as in the reference),
+                    // deck A over deck B.
+                    let (ca, cb) = ui
+                        .vertical(|ui| {
+                            let ca = eq_row(ui, "A", &mut a, theme::RED);
+                            let cb = eq_row(ui, "B", &mut b, theme::CYAN);
+                            (ca, cb)
+                        })
+                        .inner;
+                    ui.add_space(4.0);
+                    // Headphone + master VU on the right.
                     vu_meter(ui, peak);
-                    ui.add_space(6.0);
-                    let cb = eq_column(ui, "B", &mut b, theme::CYAN);
                     (ca, cb)
                 })
                 .inner;
@@ -589,19 +596,30 @@ fn mixer(ui: &mut egui::Ui, app: &mut MixtreeApp) {
     });
 }
 
-/// EQ column. `eq` is `[low, mid, high]`; the knobs are shown HIGH→LOW to match
-/// a physical mixer. Returns `true` if any band changed. Drag a knob vertically
-/// to adjust; double-click recentres it.
-fn eq_column(ui: &mut egui::Ui, label: &str, eq: &mut [f32; 3], color: Color32) -> bool {
+/// EQ row for one deck. `eq` is `[low, mid, high]`; the knobs sit LOW·MID·HIGH
+/// left-to-right (as in the reference). Returns `true` if any band changed.
+fn eq_row(ui: &mut egui::Ui, label: &str, eq: &mut [f32; 3], color: Color32) -> bool {
     let mut changed = false;
-    ui.vertical(|ui| {
-        ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new(label).size(10.0).color(theme::TEXT_DIM));
-            for (name, i) in [("HIGH", 2usize), ("MID", 1), ("LOW", 0)] {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(label).size(10.0).strong().color(color),
+            )
+            .extend(),
+        );
+        for (name, i) in [("LOW", 0usize), ("MID", 1), ("HIGH", 2)] {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
                 changed |= knob(ui, &mut eq[i], color);
-                ui.label(egui::RichText::new(name).size(8.0).color(theme::TEXT_DIM));
-            }
-        });
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(name).size(7.5).color(theme::TEXT_DIM),
+                    )
+                    .extend(),
+                );
+            });
+        }
     });
     changed
 }
