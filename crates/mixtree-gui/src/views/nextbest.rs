@@ -216,11 +216,17 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
 
         ui.add_space(12.0);
         section(ui, "ÜBERGANGS-TIPPS");
-        tip(ui, "BPM", "Halte den Unterschied unter ±8 BPM.");
-        tip(ui, "Energie", "Steigere die Energie schrittweise.");
-        tip(ui, "Harmonik", "Achte auf ähnliche Stimmung & Tonart.");
+        tip(ui, "bpm", "BPM", "Halte den Unterschied unter ±8 BPM.");
+        tip(ui, "energy", "Energie", "Steigere die Energie schrittweise.");
         tip(
             ui,
+            "harmonic",
+            "Harmonik",
+            "Achte auf ähnliche Stimmung & Tonart.",
+        );
+        tip(
+            ui,
+            "loop",
             "CUE / LOOP",
             "Cues für präzise Übergänge (Audio folgt).",
         );
@@ -318,9 +324,12 @@ fn badge(ui: &mut egui::Ui, text: String, bg: egui::Color32, fg: egui::Color32) 
         });
 }
 
-fn tip(ui: &mut egui::Ui, title: &str, text: &str) {
+fn tip(ui: &mut egui::Ui, kind: &str, title: &str, text: &str) {
     ui.horizontal(|ui| {
         ui.add_space(10.0);
+        let (r, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+        tip_icon(ui.painter(), r, kind, theme::CYAN);
+        ui.add_space(6.0);
         ui.vertical(|ui| {
             ui.label(
                 egui::RichText::new(title)
@@ -332,4 +341,72 @@ fn tip(ui: &mut egui::Ui, title: &str, text: &str) {
         });
     });
     ui.add_space(4.0);
+}
+
+/// A small drawn glyph for a transition tip (the font lacks these icons).
+fn tip_icon(p: &egui::Painter, rect: egui::Rect, kind: &str, col: egui::Color32) {
+    let c = rect.center();
+    let s = rect.width() * 0.4;
+    let w = egui::Stroke::new(1.6, col);
+    match kind {
+        // Gauge: a semicircle arc with a needle.
+        "bpm" => {
+            let n = 10;
+            let pts: Vec<egui::Pos2> = (0..=n)
+                .map(|i| {
+                    let a = std::f32::consts::PI + i as f32 / n as f32 * std::f32::consts::PI;
+                    egui::pos2(c.x + a.cos() * s, c.y + s * 0.3 + a.sin() * s)
+                })
+                .collect();
+            for seg in pts.windows(2) {
+                p.line_segment([seg[0], seg[1]], w);
+            }
+            p.line_segment(
+                [egui::pos2(c.x, c.y + s * 0.3), egui::pos2(c.x + s * 0.5, c.y - s * 0.4)],
+                w,
+            );
+        }
+        // Lightning bolt as a zigzag polyline (a bolt is non-convex, so a filled
+        // convex polygon would render wrong).
+        "energy" => {
+            let pts = [
+                egui::pos2(c.x + s * 0.35, c.y - s),
+                egui::pos2(c.x - s * 0.35, c.y - s * 0.1),
+                egui::pos2(c.x + s * 0.2, c.y - s * 0.1),
+                egui::pos2(c.x - s * 0.35, c.y + s),
+            ];
+            for seg in pts.windows(2) {
+                p.line_segment([seg[0], seg[1]], egui::Stroke::new(2.0, col));
+            }
+        }
+        // Harmonic: two sine-ish humps.
+        "harmonic" => {
+            let n = 16;
+            let pts: Vec<egui::Pos2> = (0..=n)
+                .map(|i| {
+                    let t = i as f32 / n as f32;
+                    let x = c.x - s + t * 2.0 * s;
+                    let y = c.y - (t * std::f32::consts::TAU).sin() * s * 0.6;
+                    egui::pos2(x, y)
+                })
+                .collect();
+            for seg in pts.windows(2) {
+                p.line_segment([seg[0], seg[1]], w);
+            }
+        }
+        // Loop: a ring with an arrowhead.
+        _ => {
+            p.circle_stroke(c, s * 0.8, w);
+            let tip = egui::pos2(c.x + s * 0.8, c.y - s * 0.3);
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    tip,
+                    egui::pos2(tip.x - s * 0.5, tip.y - s * 0.1),
+                    egui::pos2(tip.x - s * 0.1, tip.y + s * 0.45),
+                ],
+                col,
+                egui::Stroke::NONE,
+            ));
+        }
+    }
 }
