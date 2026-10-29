@@ -210,7 +210,6 @@ fn deck(ui: &mut egui::Ui, app: &mut MixtreeApp, side: Side, width: f32) {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     bpm_dial(ui, eff_bpm, pitch, color);
-                    ui.add_space(6.0);
                     energy_bar(ui, energy, color);
                 });
             });
@@ -488,8 +487,10 @@ fn section_color(kind: mixtree_core::models::SectionKind) -> Color32 {
 }
 
 fn bpm_dial(ui: &mut egui::Ui, bpm: Option<f64>, pitch: f64, color: Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(62.0, 62.0), Sense::hover());
-    let p = ui.painter_at(rect);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(64.0, 64.0), Sense::hover());
+    // Draw on the ui painter, not painter_at(rect): the ring is radius 30 + a
+    // 3px stroke, whose anti-aliased edge would be shaved by the 64px cell clip.
+    let p = ui.painter().clone();
     p.circle(rect.center(), 30.0, theme::PANEL, Stroke::new(3.0, color));
     p.text(
         rect.center() - Vec2::new(0.0, 8.0),
