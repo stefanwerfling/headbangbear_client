@@ -686,7 +686,9 @@ fn headphone_icon(p: &egui::Painter, rect: egui::Rect, col: Color32) {
 }
 
 fn mixflow(ui: &mut egui::Ui, app: &mut MixtreeApp) {
-    let w = ui.available_width().max(180.0);
+    // Leave a right gutter so the right-aligned BPM/energy never touches (and
+    // gets clipped by) the window edge.
+    let w = (ui.available_width() - 14.0).max(180.0);
     ui.allocate_ui(Vec2::new(w, ui.available_height()), |ui| {
         ui.vertical(|ui| {
             ui.add_space(8.0);
@@ -730,6 +732,12 @@ fn mixflow(ui: &mut egui::Ui, app: &mut MixtreeApp) {
                     ))
                     .rounding(egui::Rounding::same(7.0))
                     .inner_margin(egui::Margin::symmetric(9.0, 6.0))
+                    .outer_margin(egui::Margin {
+                        left: 0.0,
+                        right: 4.0,
+                        top: 0.0,
+                        bottom: 0.0,
+                    })
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let (r, _) =
