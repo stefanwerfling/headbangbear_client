@@ -136,6 +136,9 @@ fn deck(ui: &mut egui::Ui, app: &mut MixtreeApp, side: Side, width: f32) {
             // skip-next · LOOP · SYNC, matching the reference deck controls.
             ui.add_space(6.0);
             ui.horizontal(|ui| {
+                // Compact so the full transport fits inside narrow decks.
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.spacing_mut().button_padding.x = 7.0;
                 ui.add_space(8.0);
                 let on = track.is_some();
                 if ui.add_enabled(on, egui::Button::new("CUE")).clicked() {
@@ -159,7 +162,7 @@ fn deck(ui: &mut egui::Ui, app: &mut MixtreeApp, side: Side, width: f32) {
                 )
                 .fill(if playing { theme::GREEN } else { color })
                 .rounding(egui::Rounding::same(6.0))
-                .min_size(Vec2::new(58.0, 30.0));
+                .min_size(Vec2::new(46.0, 30.0));
                 if ui
                     .add_enabled(on, play)
                     .on_hover_text(if playing { "Pause" } else { "Abspielen" })
@@ -252,9 +255,9 @@ fn toggle_loop(app: &mut MixtreeApp, idx: usize, bars: u32) {
 
 /// A compact square transport button showing a single glyph.
 fn glyph_btn(glyph: &str, fill: Color32) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(glyph).size(14.0).color(theme::TEXT))
+    egui::Button::new(egui::RichText::new(glyph).size(13.0).color(theme::TEXT))
         .fill(fill)
-        .min_size(Vec2::new(34.0, 30.0))
+        .min_size(Vec2::new(28.0, 30.0))
 }
 
 /// Seeks a deck to the next (`dir > 0`) or previous (`dir < 0`) cue point.
@@ -281,16 +284,22 @@ fn loop_box(ui: &mut egui::Ui, bars: u32, active: bool, color: Color32) {
         .inner_margin(egui::Margin::symmetric(10.0, 6.0))
         .show(ui, |ui| {
             ui.vertical_centered(|ui| {
-                ui.label(
-                    egui::RichText::new("LOOP")
-                        .size(9.0)
-                        .color(theme::TEXT_DIM),
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new("LOOP")
+                            .size(9.0)
+                            .color(theme::TEXT_DIM),
+                    )
+                    .extend(),
                 );
-                ui.label(
-                    egui::RichText::new(format!("{bars} Bars"))
-                        .size(13.0)
-                        .strong()
-                        .color(if active { theme::ORANGE } else { color }),
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!("{bars} Bars"))
+                            .size(13.0)
+                            .strong()
+                            .color(if active { theme::ORANGE } else { color }),
+                    )
+                    .extend(),
                 );
             });
         });
@@ -747,7 +756,9 @@ fn mixflow(ui: &mut egui::Ui, app: &mut MixtreeApp) {
                                 4.0,
                                 dot_color(genre.as_deref()),
                             );
-                            ui.label(egui::RichText::new(title).size(12.0));
+                            // Reserve the BPM/energy on the right first, then let the
+                            // title take the rest and truncate — so the metrics are
+                            // never pushed off / clipped on narrow windows.
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -762,6 +773,17 @@ fn mixflow(ui: &mut egui::Ui, app: &mut MixtreeApp) {
                                         ))
                                         .size(9.0)
                                         .color(theme::TEXT_DIM),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(title).size(12.0),
+                                                )
+                                                .truncate(),
+                                            );
+                                        },
                                     );
                                 },
                             );
