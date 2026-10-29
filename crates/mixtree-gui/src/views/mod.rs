@@ -1,10 +1,12 @@
 //! egui view modules, one per region of the MixTree layout.
 
 pub mod decks;
+pub mod footer;
 pub mod graph;
 pub mod header;
 pub mod library;
 pub mod nextbest;
+pub mod playlist;
 pub mod settings;
 pub mod sidebar;
 pub mod tree_layout;

@@ -19,10 +19,17 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.add_space(12.0);
         ui.label(
-            egui::RichText::new("THEMEN / GENRES")
-                .size(12.0)
-                .color(theme::TEXT_DIM),
+            egui::RichText::new("Themen / Genres")
+                .size(13.0)
+                .strong()
+                .color(theme::TEXT),
         );
+        // Search magnifier on the right of the title row (matches the reference).
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(12.0);
+            let (r, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+            magnifier(ui.painter(), r, theme::TEXT_DIM);
+        });
     });
     ui.add_space(6.0);
     ui.horizontal(|ui| {
@@ -64,8 +71,11 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
                         .collect();
                     let collapsed = app.collapsed_genres.contains(&g.id);
                     if !kids.is_empty() {
-                        let tri = if collapsed { "▸" } else { "▾" };
-                        if ui.add(egui::Button::new(tri).frame(false)).clicked() {
+                        // Drawn caret (the font lacks small ▸/▾ triangles).
+                        let (r, resp) =
+                            ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+                        caret(ui.painter(), r, collapsed, theme::TEXT_DIM);
+                        if resp.clicked() {
                             if collapsed {
                                 app.collapsed_genres.remove(&g.id);
                             } else {
@@ -170,6 +180,37 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
             }
         });
     });
+}
+
+/// A small disclosure caret: points right when `collapsed`, down when expanded.
+fn caret(p: &egui::Painter, rect: egui::Rect, collapsed: bool, col: egui::Color32) {
+    let c = rect.center();
+    let s = 3.5;
+    let pts = if collapsed {
+        vec![
+            egui::pos2(c.x - s * 0.7, c.y - s),
+            egui::pos2(c.x - s * 0.7, c.y + s),
+            egui::pos2(c.x + s, c.y),
+        ]
+    } else {
+        vec![
+            egui::pos2(c.x - s, c.y - s * 0.7),
+            egui::pos2(c.x + s, c.y - s * 0.7),
+            egui::pos2(c.x, c.y + s),
+        ]
+    };
+    p.add(egui::Shape::convex_polygon(pts, col, egui::Stroke::NONE));
+}
+
+/// A small magnifier (search) glyph: a ring plus a handle.
+fn magnifier(p: &egui::Painter, rect: egui::Rect, col: egui::Color32) {
+    let c = egui::pos2(rect.left() + rect.width() * 0.42, rect.top() + rect.height() * 0.42);
+    let r = rect.width() * 0.32;
+    p.circle_stroke(c, r, egui::Stroke::new(1.8, col));
+    let a = std::f32::consts::FRAC_PI_4;
+    let start = c + egui::Vec2::angled(a) * r;
+    let end = c + egui::Vec2::angled(a) * (r + rect.width() * 0.28);
+    p.line_segment([start, end], egui::Stroke::new(1.8, col));
 }
 
 fn genre_chip(

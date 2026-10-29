@@ -6,15 +6,30 @@ use crate::views::cap;
 
 pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
     ui.add_space(12.0);
-    ui.horizontal(|ui| {
-        ui.add_space(12.0);
-        ui.label(
-            egui::RichText::new("Empfohlener nächster Schritt")
-                .size(14.0)
-                .strong()
-                .color(theme::RED_SOFT),
-        );
-    });
+    // Section header inside a red-outlined rounded panel with a transition glyph,
+    // as in the reference.
+    egui::Frame::none()
+        .fill(egui::Color32::from_rgba_unmultiplied(0xff, 0x2d, 0x55, 16))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(0xff, 0x2d, 0x55, 130),
+        ))
+        .rounding(egui::Rounding::same(10.0))
+        .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+        .outer_margin(egui::Margin::symmetric(10.0, 0.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let (r, _) =
+                    ui.allocate_exact_size(egui::vec2(18.0, 14.0), egui::Sense::hover());
+                transition_icon(ui.painter(), r, theme::RED_SOFT);
+                ui.label(
+                    egui::RichText::new("Empfohlener nächster Schritt")
+                        .size(14.0)
+                        .strong()
+                        .color(theme::RED_SOFT),
+                );
+            });
+        });
     ui.add_space(8.0);
 
     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -48,21 +63,27 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
             .inner_margin(egui::Margin::same(13.0))
             .outer_margin(egui::Margin::symmetric(10.0, 0.0))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new(&best.title).size(16.0).strong());
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} · BPM {} · Energie {}%",
-                        cap(best.genre.as_deref()),
-                        best.bpm
-                            .map(|b| format!("{b:.0}"))
-                            .unwrap_or_else(|| "—".into()),
-                        best.energy
-                            .map(|e| e.to_string())
-                            .unwrap_or_else(|| "—".into()),
-                    ))
-                    .size(11.0)
-                    .color(theme::TEXT_DIM),
-                );
+                ui.horizontal(|ui| {
+                    thumb(ui, app, best.track_id, 46.0, theme::RED, false);
+                    ui.add_space(4.0);
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(&best.title).size(16.0).strong());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} · BPM {} · Energie {}%",
+                                cap(best.genre.as_deref()),
+                                best.bpm
+                                    .map(|b| format!("{b:.0}"))
+                                    .unwrap_or_else(|| "—".into()),
+                                best.energy
+                                    .map(|e| e.to_string())
+                                    .unwrap_or_else(|| "—".into()),
+                            ))
+                            .size(11.0)
+                            .color(theme::TEXT_DIM),
+                        );
+                    });
+                });
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(format!("Übergang von: {current_title}"))
@@ -74,14 +95,14 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
                     if let Some(d) = best.bpm_diff {
                         badge(ui, format!("{d:+.0} BPM"), theme::RED, egui::Color32::WHITE);
                     }
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Übergangsqualität {}%",
-                            (best.score.total * 100.0).round()
-                        ))
-                        .size(11.0)
-                        .color(theme::RED_SOFT),
-                    );
+                    // "Perfekter Übergang" for a strong score, else the percentage.
+                    let q = (best.score.total * 100.0).round();
+                    let txt = if q >= 85.0 {
+                        "Perfekter Übergang".to_string()
+                    } else {
+                        format!("Übergangsqualität {q}%")
+                    };
+                    ui.label(egui::RichText::new(txt).size(11.0).color(theme::RED_SOFT));
                 });
                 ui.add_space(6.0);
                 ui.label(
@@ -91,7 +112,7 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
                 );
                 ui.add_space(8.0);
                 let btn = egui::Button::new(
-                    egui::RichText::new("Als nächsten Track laden")
+                    egui::RichText::new("▶  Als nächsten Track laden")
                         .strong()
                         .color(egui::Color32::WHITE),
                 )
@@ -113,7 +134,8 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
                 .outer_margin(egui::Margin::symmetric(10.0, 3.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("›").size(14.0).color(theme::CYAN));
+                        thumb(ui, app, r.track_id, 30.0, theme::CYAN, true);
+                        ui.add_space(2.0);
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new(&r.title).size(13.0).strong());
                             ui.label(
@@ -204,6 +226,78 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
         );
         ui.add_space(8.0);
     });
+}
+
+/// A small rounded cover thumbnail for a track, reusing the tree's decoded
+/// cover texture when available (else a dim placeholder). With `play`, overlays
+/// a small play triangle, matching the reference's alternative rows.
+fn thumb(
+    ui: &mut egui::Ui,
+    app: &MixtreeApp,
+    id: i64,
+    size: f32,
+    border: egui::Color32,
+    play: bool,
+) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let p = ui.painter();
+    let rounding = egui::Rounding::same(7.0);
+    match app.node_textures.get(&id) {
+        Some(tex) => {
+            p.image(
+                tex.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+        None => {
+            p.rect_filled(rect, rounding, theme::PANEL2);
+        }
+    }
+    p.rect_stroke(rect, rounding, egui::Stroke::new(1.0, border));
+    if play {
+        let c = rect.center();
+        let s = size * 0.22;
+        p.circle_filled(c, s + 3.0, egui::Color32::from_black_alpha(130));
+        p.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(c.x - s * 0.5, c.y - s),
+                egui::pos2(c.x - s * 0.5, c.y + s),
+                egui::pos2(c.x + s, c.y),
+            ],
+            egui::Color32::WHITE,
+            egui::Stroke::NONE,
+        ));
+    }
+}
+
+/// A small "send / transition" paper-plane glyph pointing right.
+fn transition_icon(p: &egui::Painter, rect: egui::Rect, col: egui::Color32) {
+    let l = rect.left();
+    let r = rect.right();
+    let cy = rect.center().y;
+    let top = rect.top();
+    let bot = rect.bottom();
+    // Upper wing + lower body as two triangles forming a paper plane.
+    p.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(l, top),
+            egui::pos2(r, cy),
+            egui::pos2(l, cy),
+        ],
+        col,
+        egui::Stroke::NONE,
+    ));
+    p.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(l, cy),
+            egui::pos2(r, cy),
+            egui::pos2(l, bot),
+        ],
+        egui::Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 150),
+        egui::Stroke::NONE,
+    ));
 }
 
 fn section(ui: &mut egui::Ui, title: &str) {

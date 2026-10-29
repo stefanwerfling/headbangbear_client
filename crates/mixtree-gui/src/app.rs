@@ -54,6 +54,7 @@ fn now_secs() -> i64 {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Tree,
+    Playlist,
     Library,
     Settings,
 }
@@ -169,6 +170,12 @@ pub struct MixtreeApp {
     /// Whether a deck's audio is still being decoded (drives repaint + spinner).
     pub deck_loading: [bool; 2],
 
+    /// Dev/test hook: when set (via `MIXTREE_SCREENSHOT=<path>`), render a few
+    /// frames then save one PNG of the whole window and exit. Lets a headless
+    /// run capture the UI for visual review.
+    screenshot_path: Option<PathBuf>,
+    screenshot_tick: u32,
+
     dirty: bool,
 }
 
@@ -224,6 +231,8 @@ impl MixtreeApp {
             deck_audio_tx,
             deck_gen: [0, 0],
             deck_loading: [false, false],
+            screenshot_path: std::env::var_os("MIXTREE_SCREENSHOT").map(PathBuf::from),
+            screenshot_tick: 0,
             dirty: true,
         };
         app.reload();
@@ -370,7 +379,7 @@ impl MixtreeApp {
             target: 1.0,
             duration_ms,
         });
-        self.status = format!("Auto-Mix A→B über 16 Takte (~{} s)", duration_ms / 1000);
+        self.status = format!("Auto-Mix A ▶ B über 16 Takte (~{} s)", duration_ms / 1000);
     }
 
     /// Beatmatches a deck to the other deck's effective tempo (spec §5).
@@ -594,6 +603,19 @@ impl MixtreeApp {
     }
 }
 
+/// Saves an egui framebuffer image as a PNG (dev screenshot hook).
+fn save_screenshot(img: &egui::ColorImage, path: &Path) {
+    let [w, h] = img.size;
+    let mut bytes = Vec::with_capacity(w * h * 4);
+    for p in &img.pixels {
+        bytes.extend_from_slice(&p.to_array());
+    }
+    match image::save_buffer(path, &bytes, w as u32, h as u32, image::ExtendedColorType::Rgba8) {
+        Ok(()) => eprintln!("screenshot saved: {} ({w}x{h})", path.display()),
+        Err(e) => eprintln!("screenshot failed: {e}"),
+    }
+}
+
 /// Synthesizes a short, clearly-labelled test tone (mono) for the development
 /// `sample://` tracks so the transport, playhead and mixer are demonstrable
 /// without real audio files. A soft tonic sine plus a beat click at `bpm`.
@@ -648,6 +670,25 @@ impl eframe::App for MixtreeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_analysis();
         self.poll_deck_audio();
+
+        // Headless screenshot hook: settle a few frames, then capture + exit.
+        if let Some(path) = self.screenshot_path.clone() {
+            ctx.request_repaint();
+            self.screenshot_tick += 1;
+            if self.screenshot_tick == 14 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+            }
+            let shot = ctx.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                    _ => None,
+                })
+            });
+            if let Some(img) = shot {
+                save_screenshot(&img, &path);
+                std::process::exit(0);
+            }
+        }
         if self.analyzing {
             // Keep polling the worker while analysis runs.
             ctx.request_repaint_after(std::time::Duration::from_millis(300));
@@ -669,6 +710,13 @@ impl eframe::App for MixtreeApp {
             .frame(egui::Frame::none().fill(theme::BG2))
             .show(ctx, |ui| views::header::show(self, ui));
 
+        // Thin status footer at the very bottom (matches the reference): theme
+        // focus on the left, live BPM/Key/Energy of the current track on the right.
+        egui::TopBottomPanel::bottom("footer")
+            .exact_height(30.0)
+            .frame(egui::Frame::none().fill(theme::BG2))
+            .show(ctx, |ui| views::footer::show(self, ui));
+
         egui::TopBottomPanel::bottom("decks")
             .exact_height(236.0)
             .frame(egui::Frame::none().fill(theme::PANEL))
@@ -689,6 +737,7 @@ impl eframe::App for MixtreeApp {
             .show(ctx, |ui| match self.view {
                 View::Library => views::library::show(self, ui),
                 View::Settings => views::settings::show(self, ui),
+                View::Playlist => views::playlist::show(self, ui),
                 View::Tree => views::graph::show(self, ui),
             });
     }

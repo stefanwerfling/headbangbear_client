@@ -12,14 +12,24 @@ use mixtree_core::models::Track;
 
 pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
     let full = ui.available_rect_before_wrap();
-    ui.horizontal(|ui| {
-        let deck_w = (full.width() - 150.0 - 240.0 - 24.0) / 2.0;
+    let spacing = ui.spacing().item_spacing.x;
+    // Top-align the columns so each deck/mixer/flow starts at the same y (a
+    // centered layout pushed the shorter columns down).
+    ui.horizontal_top(|ui| {
+        // Reserve width for the mixer, the Mix-Flow panel and the layout chrome
+        // (6 inter-item gaps + 3 separators) so nothing overflows / gets clipped.
+        let mixer_w = 150.0;
+        let mixflow_w = 240.0;
+        let chrome = spacing * 6.0 + 6.0 * 3.0;
+        let deck_w = ((full.width() - mixer_w - mixflow_w - chrome) / 2.0).max(220.0);
         deck(ui, app, Side::A, deck_w);
         ui.separator();
         mixer(ui, app);
         ui.separator();
         deck(ui, app, Side::B, deck_w);
         ui.separator();
+        // Mix-Flow fills whatever remains, so its right-aligned BPM/energy never
+        // falls off the edge.
         mixflow(ui, app);
     });
 }
@@ -43,20 +53,41 @@ fn deck(ui: &mut egui::Ui, app: &mut MixtreeApp, side: Side, width: f32) {
     let playing = app.audio.is_playing(idx);
     let pos_ms = app.audio.position_ms(idx);
     let dur_ms = track.as_ref().and_then(|t| t.duration_ms).unwrap_or(0);
+    let energy = track.as_ref().and_then(|t| t.energy);
+    let cue_pos: Vec<u64> = app.deck(idx).cues.iter().map(|c| c.position_ms).collect();
+    // Loop length shown in the LOOP indicator (deck A = 4 bars, deck B = 8 bars,
+    // as in the reference).
+    let loop_bars: u32 = if idx == 0 { 4 } else { 8 };
 
     ui.allocate_ui(Vec2::new(width, ui.available_height()), |ui| {
-        ui.vertical(|ui| {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
+        ui.horizontal_top(|ui| {
+            // Left column: title, waveform and transport (flexible width).
+            ui.vertical(|ui| {
+                ui.set_width(width - 112.0);
                 ui.add_space(8.0);
-                // Cover placeholder.
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                // Cover art: reuse the tree's decoded cover texture when available.
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(44.0, 44.0), Sense::hover());
-                ui.painter().rect(
-                    rect,
-                    egui::Rounding::same(8.0),
-                    theme::PANEL2,
-                    Stroke::new(1.0, color),
-                );
+                let tex = track
+                    .as_ref()
+                    .and_then(|t| app.node_textures.get(&t.id).map(|h| h.id()));
+                let rounding = egui::Rounding::same(8.0);
+                match tex {
+                    Some(id) => {
+                        ui.painter().image(
+                            id,
+                            rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                    }
+                    None => {
+                        ui.painter().rect_filled(rect, rounding, theme::PANEL2);
+                    }
+                }
+                ui.painter()
+                    .rect_stroke(rect, rounding, Stroke::new(1.0, color));
                 ui.vertical(|ui| {
                     ui.label(
                         egui::RichText::new(
@@ -81,11 +112,11 @@ fn deck(ui: &mut egui::Ui, app: &mut MixtreeApp, side: Side, width: f32) {
                     };
                     ui.label(egui::RichText::new(sub).size(11.0).color(theme::TEXT_DIM));
                 });
-            });
+                });
 
-            // Waveform with live playhead.
-            ui.add_space(6.0);
-            let wf_rect = ui.allocate_space(Vec2::new(width - 16.0, 60.0)).1;
+                // Waveform with live playhead.
+                ui.add_space(6.0);
+                let wf_rect = ui.allocate_space(Vec2::new(width - 128.0, 60.0)).1;
             let peaks = app.deck(idx).waveform.clone();
             let cues = app.deck(idx).cues.clone();
             let sections = app.deck(idx).sections.clone();
@@ -101,19 +132,24 @@ fn deck(ui: &mut egui::Ui, app: &mut MixtreeApp, side: Side, width: f32) {
                 dur_ms,
             );
 
-            // Transport (now wired to the audio engine).
+            // Transport (wired to the audio engine): CUE · skip-prev · play ·
+            // skip-next · LOOP · SYNC, matching the reference deck controls.
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
-                if ui
-                    .add_enabled(track.is_some(), egui::Button::new("CUE"))
-                    .clicked()
-                {
+                let on = track.is_some();
+                if ui.add_enabled(on, egui::Button::new("CUE")).clicked() {
                     app.audio_send(ACmd::Cue(idx));
                 }
-                // Primary transport control — made deliberately prominent so it
-                // reads as "the play button": a filled accent-coloured pill with
-                // a clear ▶ / ⏸ glyph.
+                // Skip to previous cue.
+                if ui
+                    .add_enabled(on, glyph_btn("⏮", theme::PANEL2))
+                    .on_hover_text("Zum vorherigen Cue")
+                    .clicked()
+                {
+                    seek_cue(app, idx, -1, &cue_pos, pos_ms);
+                }
+                // Primary play/pause — a filled accent-coloured pill.
                 let play_txt = if playing { "⏸" } else { "▶" };
                 let play = egui::Button::new(
                     egui::RichText::new(play_txt)
@@ -125,19 +161,27 @@ fn deck(ui: &mut egui::Ui, app: &mut MixtreeApp, side: Side, width: f32) {
                 .rounding(egui::Rounding::same(6.0))
                 .min_size(Vec2::new(58.0, 30.0));
                 if ui
-                    .add_enabled(track.is_some(), play)
+                    .add_enabled(on, play)
                     .on_hover_text(if playing { "Pause" } else { "Abspielen" })
                     .clicked()
                 {
                     app.audio_send(ACmd::TogglePlay(idx));
+                }
+                // Skip to next cue.
+                if ui
+                    .add_enabled(on, glyph_btn("⏭", theme::PANEL2))
+                    .on_hover_text("Zum nächsten Cue")
+                    .clicked()
+                {
+                    seek_cue(app, idx, 1, &cue_pos, pos_ms);
                 }
                 let loop_btn = egui::Button::new("LOOP").fill(if loop_active {
                     theme::ORANGE
                 } else {
                     theme::PANEL2
                 });
-                if ui.add_enabled(track.is_some(), loop_btn).clicked() {
-                    toggle_loop(app, idx);
+                if ui.add_enabled(on, loop_btn).clicked() {
+                    toggle_loop(app, idx, loop_bars);
                 }
                 let synced = (pitch - 1.0).abs() > 1e-4;
                 let sync_btn = egui::Button::new("SYNC").fill(if synced {
@@ -146,24 +190,33 @@ fn deck(ui: &mut egui::Ui, app: &mut MixtreeApp, side: Side, width: f32) {
                     theme::PANEL2
                 });
                 if ui
-                    .add_enabled(track.is_some(), sync_btn)
+                    .add_enabled(on, sync_btn)
                     .on_hover_text("Tempo an das andere Deck angleichen")
                     .clicked()
                 {
                     app.sync_deck(idx);
                 }
+                });
+            });
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(8.0);
+            // Right column: LOOP indicator, BPM dial and ENERGY bar (fixed width).
+            ui.add_space(6.0);
+            ui.vertical(|ui| {
+                ui.add_space(8.0);
+                loop_box(ui, loop_bars, loop_active, color);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
                     bpm_dial(ui, eff_bpm, pitch, color);
+                    ui.add_space(6.0);
+                    energy_bar(ui, energy, color);
                 });
             });
         });
     });
 }
 
-/// Toggles a 4-beat loop at the current playhead for a deck.
-fn toggle_loop(app: &mut MixtreeApp, idx: usize) {
+/// Toggles a loop of `bars` bars at the current playhead for a deck.
+fn toggle_loop(app: &mut MixtreeApp, idx: usize, bars: u32) {
     let active = app.deck(idx).loop_active;
     if active {
         app.audio_send(ACmd::SetLoop {
@@ -183,7 +236,8 @@ fn toggle_loop(app: &mut MixtreeApp, idx: usize) {
             .and_then(|t| t.bpm)
             .unwrap_or(120.0);
         let start = app.audio.position_ms(idx);
-        let len = (4.0 * 60_000.0 / bpm) as u64; // 4 beats
+        // bars × 4 beats per bar.
+        let len = (bars as f64 * 4.0 * 60_000.0 / bpm) as u64;
         app.audio_send(ACmd::SetLoop {
             deck: idx,
             range_ms: Some((start, start + len)),
@@ -194,6 +248,99 @@ fn toggle_loop(app: &mut MixtreeApp, idx: usize) {
             app.deck_b.loop_active = true
         }
     }
+}
+
+/// A compact square transport button showing a single glyph.
+fn glyph_btn(glyph: &str, fill: Color32) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(glyph).size(14.0).color(theme::TEXT))
+        .fill(fill)
+        .min_size(Vec2::new(34.0, 30.0))
+}
+
+/// Seeks a deck to the next (`dir > 0`) or previous (`dir < 0`) cue point.
+fn seek_cue(app: &mut MixtreeApp, idx: usize, dir: i32, cues: &[u64], pos_ms: u64) {
+    let mut sorted: Vec<u64> = cues.to_vec();
+    sorted.sort_unstable();
+    let target = if dir > 0 {
+        sorted.into_iter().find(|&p| p > pos_ms + 50)
+    } else {
+        sorted.into_iter().rev().find(|&p| p + 50 < pos_ms).or(Some(0))
+    };
+    if let Some(ms) = target {
+        app.audio_send(ACmd::Seek { deck: idx, ms });
+    }
+}
+
+/// A small "LOOP" indicator box showing the loop length in bars.
+fn loop_box(ui: &mut egui::Ui, bars: u32, active: bool, color: Color32) {
+    let border = if active { theme::ORANGE } else { theme::LINE2 };
+    egui::Frame::none()
+        .fill(Color32::from_rgb(0x06, 0x0a, 0x12))
+        .stroke(Stroke::new(1.0, border))
+        .rounding(egui::Rounding::same(8.0))
+        .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new("LOOP")
+                        .size(9.0)
+                        .color(theme::TEXT_DIM),
+                );
+                ui.label(
+                    egui::RichText::new(format!("{bars} Bars"))
+                        .size(13.0)
+                        .strong()
+                        .color(if active { theme::ORANGE } else { color }),
+                );
+            });
+        });
+}
+
+/// A vertical ENERGY meter for the loaded track (0–100), captioned as in the
+/// reference, filled green→orange→red toward the top.
+fn energy_bar(ui: &mut egui::Ui, energy: Option<u8>, color: Color32) {
+    ui.vertical(|ui| {
+        // Extend so the caption never wraps in the narrow right column.
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new("ENERGY")
+                    .size(8.0)
+                    .color(theme::TEXT_DIM),
+            )
+            .extend(),
+        );
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, 52.0), Sense::hover());
+        let p = ui.painter_at(rect);
+        p.rect(
+            rect,
+            egui::Rounding::same(3.0),
+            Color32::from_rgb(0x06, 0x0a, 0x12),
+            Stroke::new(1.0, theme::LINE),
+        );
+        let e = energy.unwrap_or(0) as f32 / 100.0;
+        let h = e * rect.height();
+        let fill = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), rect.bottom() - h),
+            rect.right_bottom(),
+        );
+        let col = if e > 0.85 {
+            theme::RED
+        } else if e > 0.6 {
+            theme::ORANGE
+        } else {
+            color
+        };
+        p.rect_filled(fill, egui::Rounding::same(3.0), col);
+        ui.label(
+            egui::RichText::new(
+                energy
+                    .map(|e| format!("{e}%"))
+                    .unwrap_or_else(|| "—".into()),
+            )
+            .size(9.0)
+            .color(theme::TEXT_DIM),
+        );
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -345,18 +492,24 @@ fn bpm_dial(ui: &mut egui::Ui, bpm: Option<f64>, pitch: f64, color: Color32) {
 fn mixer(ui: &mut egui::Ui, app: &mut MixtreeApp) {
     ui.allocate_ui(Vec2::new(150.0, ui.available_height()), |ui| {
         ui.vertical(|ui| {
-            ui.add_space(8.0);
+            // Keep the mixer a narrow fixed-width column (as in the reference) so
+            // it doesn't grow into the decks.
+            ui.set_width(150.0);
+            // Tight vertical rhythm so the knob stacks + crossfader + Auto-Mix all
+            // fit inside the fixed deck-bar height without clipping.
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.add_space(6.0);
             let mut a = app.eq_a;
             let mut b = app.eq_b;
             let mut xf = app.crossfader;
             let peak = app.audio.master_peak();
             let (ca, cb) = ui
                 .horizontal(|ui| {
-                    let ca = eq_column(ui, "A", &mut a);
+                    let ca = eq_column(ui, "A", &mut a, theme::RED);
                     ui.add_space(6.0);
                     vu_meter(ui, peak);
                     ui.add_space(6.0);
-                    let cb = eq_column(ui, "B", &mut b);
+                    let cb = eq_column(ui, "B", &mut b, theme::CYAN);
                     (ca, cb)
                 })
                 .inner;
@@ -392,7 +545,7 @@ fn mixer(ui: &mut egui::Ui, app: &mut MixtreeApp) {
             }
 
             ui.add_space(4.0);
-            let auto = egui::Button::new(egui::RichText::new("Auto-Mix A→B").size(10.0))
+            let auto = egui::Button::new(egui::RichText::new("Auto-Mix A ▶ B").size(10.0))
                 .fill(theme::PANEL2)
                 .min_size(Vec2::new(ui.available_width(), 22.0));
             if ui
@@ -406,24 +559,49 @@ fn mixer(ui: &mut egui::Ui, app: &mut MixtreeApp) {
     });
 }
 
-/// EQ column. `eq` is `[low, mid, high]`; the sliders are shown HIGH→LOW to match
-/// a physical mixer. Returns `true` if any band changed.
-fn eq_column(ui: &mut egui::Ui, label: &str, eq: &mut [f32; 3]) -> bool {
+/// EQ column. `eq` is `[low, mid, high]`; the knobs are shown HIGH→LOW to match
+/// a physical mixer. Returns `true` if any band changed. Drag a knob vertically
+/// to adjust; double-click recentres it.
+fn eq_column(ui: &mut egui::Ui, label: &str, eq: &mut [f32; 3], color: Color32) -> bool {
     let mut changed = false;
     ui.vertical(|ui| {
-        ui.label(egui::RichText::new(label).size(10.0).color(theme::TEXT_DIM));
-        for (name, i) in [("HIGH", 2usize), ("MID", 1), ("LOW", 0)] {
-            changed |= ui
-                .add(
-                    egui::Slider::new(&mut eq[i], 0.0..=1.0)
-                        .vertical()
-                        .show_value(false)
-                        .handle_shape(egui::style::HandleShape::Circle),
-                )
-                .changed();
-            ui.label(egui::RichText::new(name).size(8.0).color(theme::TEXT_DIM));
-        }
+        ui.vertical_centered(|ui| {
+            ui.label(egui::RichText::new(label).size(10.0).color(theme::TEXT_DIM));
+            for (name, i) in [("HIGH", 2usize), ("MID", 1), ("LOW", 0)] {
+                changed |= knob(ui, &mut eq[i], color);
+                ui.label(egui::RichText::new(name).size(8.0).color(theme::TEXT_DIM));
+            }
+        });
     });
+    changed
+}
+
+/// A rotary knob for a normalised `0..=1` value. Drag vertically to change;
+/// double-click recentres to 0.5. Returns `true` on change.
+fn knob(ui: &mut egui::Ui, value: &mut f32, color: Color32) -> bool {
+    let size = 26.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(size, size), Sense::click_and_drag());
+    let mut changed = false;
+    if resp.dragged() {
+        *value = (*value - resp.drag_delta().y * 0.012).clamp(0.0, 1.0);
+        changed = true;
+    }
+    if resp.double_clicked() {
+        *value = 0.5;
+        changed = true;
+    }
+    let p = ui.painter_at(rect);
+    let c = rect.center();
+    let r = size * 0.42;
+    p.circle_filled(c, r, theme::PANEL2);
+    p.circle_stroke(c, r, Stroke::new(1.5, theme::LINE2));
+    // Value pointer (knob sweeps −135°…+135° from 12 o'clock).
+    let theta = (-135.0 + *value * 270.0_f32).to_radians();
+    let dir = Vec2::new(theta.sin(), -theta.cos());
+    p.line_segment(
+        [c + dir * (r * 0.3), c + dir * (r * 0.95)],
+        Stroke::new(2.5, color),
+    );
     changed
 }
 
@@ -431,8 +609,11 @@ fn eq_column(ui: &mut egui::Ui, label: &str, eq: &mut [f32; 3]) -> bool {
 /// green → orange → red toward clipping.
 fn vu_meter(ui: &mut egui::Ui, peak: f32) {
     ui.vertical(|ui| {
+        // Headphone (cue-monitor) glyph above the meter, as in the reference.
+        let (hp, _) = ui.allocate_exact_size(Vec2::new(16.0, 14.0), Sense::hover());
+        headphone_icon(ui.painter(), hp, theme::TEXT_DIM);
         ui.label(egui::RichText::new("VU").size(10.0).color(theme::TEXT_DIM));
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(10.0, 96.0), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(10.0, 84.0), Sense::hover());
         let p = ui.painter_at(rect);
         p.rect(
             rect,
@@ -457,8 +638,36 @@ fn vu_meter(ui: &mut egui::Ui, peak: f32) {
     });
 }
 
+/// A simple over-ear headphone glyph: a headband arc plus two ear cups.
+fn headphone_icon(p: &egui::Painter, rect: egui::Rect, col: Color32) {
+    let c = egui::pos2(rect.center().x, rect.bottom() - 2.0);
+    let r = rect.width() * 0.42;
+    // Headband (upper half arc).
+    let n = 12;
+    let pts: Vec<egui::Pos2> = (0..=n)
+        .map(|i| {
+            let a = std::f32::consts::PI + i as f32 / n as f32 * std::f32::consts::PI;
+            egui::pos2(c.x + a.cos() * r, c.y + a.sin() * r)
+        })
+        .collect();
+    for w in pts.windows(2) {
+        p.line_segment([w[0], w[1]], Stroke::new(1.6, col));
+    }
+    // Ear cups.
+    let cup = Vec2::new(3.0, 5.0);
+    for sx in [-1.0f32, 1.0] {
+        let cx = c.x + sx * r;
+        p.rect_filled(
+            egui::Rect::from_center_size(egui::pos2(cx, c.y), cup * 2.0),
+            egui::Rounding::same(1.5),
+            col,
+        );
+    }
+}
+
 fn mixflow(ui: &mut egui::Ui, app: &mut MixtreeApp) {
-    ui.allocate_ui(Vec2::new(236.0, ui.available_height()), |ui| {
+    let w = ui.available_width().max(180.0);
+    ui.allocate_ui(Vec2::new(w, ui.available_height()), |ui| {
         ui.vertical(|ui| {
             ui.add_space(8.0);
             ui.label(

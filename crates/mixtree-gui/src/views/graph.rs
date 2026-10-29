@@ -200,6 +200,10 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
         );
     }
 
+    // BPM pills are collected here and drawn last, so they sit on top of nodes
+    // and hub plates instead of being painted over by them.
+    let mut pills: Vec<(Pos2, String, Color32)> = Vec::new();
+
     // --- alternative transitions from the current track (cyan, sparse) ---
     let current = app.current;
     for e in &app.graph.edges {
@@ -222,7 +226,7 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
             true,
         );
         if let Some(d) = e.score.bpm_diff {
-            pill_label(&painter, mid, format!("{:+.0} BPM", d), theme::CYAN);
+            pills.push((mid, format!("{:+.0} BPM", d), theme::CYAN));
         }
     }
 
@@ -250,12 +254,11 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
                     .find(|e| e.from == w[0] && e.to == w[1])
                 {
                     if let Some(d) = e.score.bpm_diff {
-                        pill_label(
-                            &painter,
+                        pills.push((
                             to_screen(a).lerp(to_screen(b), 0.5),
                             format!("{:+.0} BPM", d),
                             theme::RED,
-                        );
+                        ));
                     }
                 }
             }
@@ -281,17 +284,8 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
                 let gr = hub_r;
                 painter.circle_filled(c, gr - 1.0, Color32::from_rgb(0x0b, 0x12, 0x1e));
                 glow_ring(&painter, c, gr, col, 3.0);
-                painter.text(
-                    c,
-                    Align2::CENTER_CENTER,
-                    name.chars()
-                        .next()
-                        .unwrap_or('♪')
-                        .to_uppercase()
-                        .to_string(),
-                    FontId::proportional(16.0 * s),
-                    with_alpha(col, 230),
-                );
+                // Genre glyph (drawn, matching the reference icons), not a letter.
+                hub_icon(&painter, c, 11.0 * s, id, with_alpha(col, 235));
                 // Attached rounded label plate to the right (name + BPM range).
                 let plate_h = 40.0 * s;
                 let plate = Rect::from_min_size(
@@ -374,19 +368,36 @@ pub fn show(app: &mut MixtreeApp, ui: &mut egui::Ui) {
                     title_g,
                     theme::TEXT,
                 );
+                // Two stacked meta lines, as in the reference: "BPM 138" / "Energie 85%".
                 painter.text(
-                    c + Vec2::new(0.0, radius + 16.0),
+                    c + Vec2::new(0.0, radius + 15.0),
                     Align2::CENTER_TOP,
                     format!(
-                        "{} BPM · E{}",
+                        "BPM {}",
                         bpm.map(|b| format!("{b:.0}")).unwrap_or_else(|| "—".into()),
-                        energy.map(|e| e.to_string()).unwrap_or_else(|| "—".into()),
+                    ),
+                    FontId::proportional(8.0),
+                    theme::TEXT_DIM,
+                );
+                painter.text(
+                    c + Vec2::new(0.0, radius + 25.0),
+                    Align2::CENTER_TOP,
+                    format!(
+                        "Energie {}",
+                        energy
+                            .map(|e| format!("{e}%"))
+                            .unwrap_or_else(|| "—".into()),
                     ),
                     FontId::proportional(8.0),
                     theme::TEXT_DIM,
                 );
             }
         }
+    }
+
+    // --- BPM pills on top (so hub plates never cover them) ---
+    for (pos, text, color) in pills {
+        pill_label(&painter, pos, text, color);
     }
 
     // --- beat-synced playback ring on the currently-playing deck-A track ---
@@ -600,6 +611,76 @@ fn glow_ring(painter: &egui::Painter, c: Pos2, r: f32, color: Color32, core_w: f
         painter.circle_stroke(c, r, Stroke::new(core_w * mul, with_alpha(color, alpha)));
     }
     painter.circle_stroke(c, r, Stroke::new(core_w, color));
+}
+
+/// Draws a small genre glyph centred at `c`, roughly `size` radius, matching the
+/// reference hub icons: a home for house, equaliser bars for techno/hardstyle,
+/// ascending chevrons for trance, a sparkle for ambient, else a music dot.
+fn hub_icon(painter: &egui::Painter, c: Pos2, size: f32, genre_id: &str, col: Color32) {
+    let w = Stroke::new((size * 0.22).max(1.6), col);
+    match genre_id {
+        "house" => {
+            let s = size;
+            let roof = s * 0.5;
+            // Roof.
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    Pos2::new(c.x, c.y - s),
+                    Pos2::new(c.x - s, c.y - roof * 0.2),
+                    Pos2::new(c.x + s, c.y - roof * 0.2),
+                ],
+                col,
+                Stroke::NONE,
+            ));
+            // Body.
+            painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(c.x - s * 0.62, c.y - roof * 0.2),
+                    Pos2::new(c.x + s * 0.62, c.y + s * 0.75),
+                ),
+                egui::Rounding::same(1.5),
+                col,
+            );
+        }
+        "techno" | "hardstyle" => {
+            // Equaliser bars.
+            let heights = [0.5f32, 1.0, 0.7, 0.95, 0.55];
+            let n = heights.len();
+            let bw = size * 1.9 / n as f32;
+            for (i, h) in heights.iter().enumerate() {
+                let x = c.x - size * 0.95 + (i as f32 + 0.5) * bw;
+                let bh = size * h;
+                painter.line_segment(
+                    [Pos2::new(x, c.y + bh * 0.6), Pos2::new(x, c.y - bh * 0.6)],
+                    Stroke::new((bw * 0.55).max(1.6), col),
+                );
+            }
+        }
+        "trance" => {
+            // Two ascending chevrons.
+            for k in 0..2 {
+                let dy = c.y + size * 0.55 - k as f32 * size * 0.7;
+                painter.line_segment([Pos2::new(c.x - size * 0.8, dy), Pos2::new(c.x, dy - size * 0.7)], w);
+                painter.line_segment([Pos2::new(c.x, dy - size * 0.7), Pos2::new(c.x + size * 0.8, dy)], w);
+            }
+        }
+        "ambient" => {
+            // Four-point sparkle.
+            painter.line_segment([Pos2::new(c.x, c.y - size), Pos2::new(c.x, c.y + size)], w);
+            painter.line_segment([Pos2::new(c.x - size, c.y), Pos2::new(c.x + size, c.y)], w);
+            let d = size * 0.55;
+            painter.line_segment([Pos2::new(c.x - d, c.y - d), Pos2::new(c.x + d, c.y + d)], Stroke::new(w.width * 0.7, col));
+            painter.line_segment([Pos2::new(c.x - d, c.y + d), Pos2::new(c.x + d, c.y - d)], Stroke::new(w.width * 0.7, col));
+        }
+        _ => {
+            // Generic "music" mark: a note head + stem.
+            painter.circle_filled(Pos2::new(c.x - size * 0.3, c.y + size * 0.4), size * 0.4, col);
+            painter.line_segment(
+                [Pos2::new(c.x + size * 0.1, c.y + size * 0.4), Pos2::new(c.x + size * 0.1, c.y - size * 0.8)],
+                w,
+            );
+        }
+    }
 }
 
 /// Opaque linear blend of two colours.
