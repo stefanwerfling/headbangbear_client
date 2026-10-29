@@ -398,25 +398,44 @@ fn waveform(
             );
         }
     }
-    // Cue markers (suggested + manual).
+    // Cue markers (suggested + manual): a thin colour line plus a small pill
+    // label at the top, as in the reference ("CUE 1/2/3", "Drop", …).
     if dur_ms > 0 {
-        for cue in cues {
+        // Pill labels are skipped where they would overlap the previous one, so
+        // dense cue sets stay legible (the marker line is always drawn).
+        let mut last_pill_right = f32::NEG_INFINITY;
+        for (i, cue) in cues.iter().enumerate() {
             let cx = rect.left()
                 + (cue.position_ms as f32 / dur_ms as f32).clamp(0.0, 1.0) * rect.width();
             let col = cue.color.as_deref().map(theme::hex).unwrap_or(theme::GREEN);
             painter.line_segment(
                 [egui::pos2(cx, rect.top()), egui::pos2(cx, rect.bottom())],
-                Stroke::new(1.5, col),
+                Stroke::new(1.2, Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 180)),
             );
-            if let Some(label) = &cue.label {
-                painter.text(
-                    egui::pos2(cx + 2.0, rect.top() + 2.0),
-                    egui::Align2::LEFT_TOP,
-                    label,
-                    egui::FontId::proportional(8.0),
-                    col,
-                );
+            let label = cue
+                .label
+                .clone()
+                .unwrap_or_else(|| format!("CUE {}", i + 1));
+            let font = egui::FontId::proportional(7.5);
+            let galley = painter.layout_no_wrap(label, font, col);
+            let pad = Vec2::new(4.0, 1.5);
+            let pw = galley.size().x + pad.x * 2.0;
+            let px = cx.clamp(rect.left(), (rect.right() - pw).max(rect.left()));
+            if px <= last_pill_right + 2.0 {
+                continue; // would collide with the previous pill — line only.
             }
+            let pill = egui::Rect::from_min_size(
+                egui::pos2(px, rect.top() + 2.0),
+                Vec2::new(pw, galley.size().y + pad.y * 2.0),
+            );
+            painter.rect(
+                pill,
+                egui::Rounding::same(3.0),
+                Color32::from_rgb(0x06, 0x0a, 0x12),
+                Stroke::new(1.0, col),
+            );
+            painter.galley(pill.min + pad, galley, col);
+            last_pill_right = pill.right();
         }
     }
     // Playhead.
@@ -435,9 +454,10 @@ fn waveform(
     } else {
         "Wellenform-Vorschau"
     };
+    // Bottom-right, out of the way of the top cue pills.
     painter.text(
-        rect.right_top() + Vec2::new(-6.0, 4.0),
-        egui::Align2::RIGHT_TOP,
+        rect.right_bottom() + Vec2::new(-6.0, -4.0),
+        egui::Align2::RIGHT_BOTTOM,
         tag,
         egui::FontId::proportional(8.0),
         theme::TEXT_DIM,
