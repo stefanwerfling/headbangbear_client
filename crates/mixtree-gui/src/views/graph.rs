@@ -520,18 +520,37 @@ fn layout_positions(app: &MixtreeApp) -> HashMap<String, Pos2> {
         pos.insert(node_key_group(g), Pos2::new(hx, hy));
 
         let members = tracks_by_group.get(g).cloned().unwrap_or_default();
-        let n = members.len();
-        for (j, tid) in members.iter().enumerate() {
-            let p = title_of
+        // Designed sample tracks keep their exact reference positions (mockup
+        // fidelity); everything else (an imported library) is fanned below the
+        // hub. Unknown tracks are indexed among *themselves* so the fan spacing
+        // is independent of how many sample tracks the group also has.
+        let mut unknown: Vec<i64> = Vec::new();
+        for tid in &members {
+            match title_of
                 .get(tid)
                 .and_then(|t| tree_layout::sample_track_pos(t))
-                .map(|(x, y)| Pos2::new(x, y))
-                .unwrap_or_else(|| {
-                    // Deterministic fan below the hub for unknown tracks.
-                    let dx = (j as f32 - (n.saturating_sub(1) as f32) / 2.0) * 58.0;
-                    Pos2::new(hx + dx, hy + 110.0)
-                });
-            pos.insert(node_key_track(*tid), p);
+            {
+                Some((x, y)) => {
+                    pos.insert(node_key_track(*tid), Pos2::new(x, y));
+                }
+                None => unknown.push(*tid),
+            }
+        }
+        // Fan unknown tracks in rows of up to `PER_ROW`, with wide horizontal
+        // spacing (so the title labels don't collide) and a slight per-column
+        // vertical stagger for extra legibility.
+        const PER_ROW: usize = 4;
+        const COL_W: f32 = 94.0;
+        const ROW_H: f32 = 96.0;
+        let m = unknown.len();
+        for (k, tid) in unknown.iter().enumerate() {
+            let row = k / PER_ROW;
+            let col = k % PER_ROW;
+            let in_row = (m - row * PER_ROW).min(PER_ROW);
+            let dx = (col as f32 - (in_row as f32 - 1.0) / 2.0) * COL_W;
+            let stagger = if col % 2 == 1 { 24.0 } else { 0.0 };
+            let dy = 120.0 + row as f32 * ROW_H + stagger;
+            pos.insert(node_key_track(*tid), Pos2::new(hx + dx, hy + dy));
         }
     }
     pos
